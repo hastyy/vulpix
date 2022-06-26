@@ -4,7 +4,7 @@ import { getPosts, getPost, getComments, savePostWithComments } from './lib';
 
 (async function main() {
     const PAGE_SIZE = Number(process.env.PAGE_SIZE);
-    const NUM_OF_WORKERS = 44;
+    const NUM_OF_WORKERS = Number(process.env.NUM_OF_WORKERS);
 
     const [ellapsedTimeMs] = await duration(async () => {
         for (let page = 1; ; page++) {
@@ -16,7 +16,7 @@ import { getPosts, getPost, getComments, savePostWithComments } from './lib';
                     (async function (startingIndex) {
                         for (
                             let j = startingIndex;
-                            postsProcessed < postsPage.length && j < postsPage.length - 1;
+                            postsProcessed < postsPage.length && j < postsPage.length;
                             j = ++postsProcessed
                         ) {
                             const { id } = postsPage[j];
@@ -40,5 +40,5 @@ import { getPosts, getPost, getComments, savePostWithComments } from './lib';
     })();
 
     console.log(`Whole process took ${ellapsedTimeMs}ms to run.`);
-    fs.appendFileSync('results.txt', `Benchmark 3: ${ellapsedTimeMs}ms\n`);
+    fs.appendFileSync('benchmark/results.txt', `Benchmark 3: ${ellapsedTimeMs}ms\n`);
 })();

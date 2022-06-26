@@ -7,7 +7,7 @@ import { getPosts, getPost, getComments, savePostWithComments, PostID, PostWithC
 
 (async function main() {
     const PAGE_SIZE = Number(process.env.PAGE_SIZE);
-    const NUM_OF_WORKERS = 45;
+    const NUM_OF_WORKERS = Number(process.env.NUM_OF_WORKERS);
 
     const [ellapsedTimeMs] = await duration(async () =>
         workflow(async ({ launch }) => {
@@ -57,5 +57,5 @@ import { getPosts, getPost, getComments, savePostWithComments, PostID, PostWithC
     )();
 
     console.log(`Whole process took ${ellapsedTimeMs}ms to run.`);
-    fs.appendFileSync('results.txt', `Benchmark 4: ${ellapsedTimeMs}ms\n`);
+    fs.appendFileSync('benchmark/results.txt', `Benchmark 4: ${ellapsedTimeMs}ms\n`);
 })();

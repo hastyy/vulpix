@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { duration } from './../src/util/time';
+import { duration } from '../src/util/time';
 import { getPosts, getPost, getComments, savePostWithComments } from './lib';
 
 (async function main() {
@@ -8,9 +8,9 @@ import { getPosts, getPost, getComments, savePostWithComments } from './lib';
     const [ellapsedTimeMs] = await duration(async () => {
         for (let page = 1; ; page++) {
             const postsPage = await getPosts(page, PAGE_SIZE);
-            for (const entry of postsPage) {
-                const post = await getPost(entry.id);
-                const comments = await getComments(entry.id);
+            for (const { id } of postsPage) {
+                const post = await getPost(id);
+                const comments = await getComments(id);
 
                 const combined = {
                     ...post,
@@ -26,5 +26,5 @@ import { getPosts, getPost, getComments, savePostWithComments } from './lib';
     })();
 
     console.log(`Whole process took ${ellapsedTimeMs}ms to run.`);
-    fs.appendFileSync('results.txt', `Benchmark 1: ${ellapsedTimeMs}ms\n`);
+    fs.appendFileSync('benchmark/results.txt', `Benchmark 1: ${ellapsedTimeMs}ms\n`);
 })();
