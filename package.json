@@ -1,9 +1,15 @@
 {
   "name": "vulpix",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CSP-like channels library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "jest",
