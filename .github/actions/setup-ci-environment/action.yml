@@ -1,0 +1,15 @@
+name: Setup CI Environment
+description: Installs and caches dependencies
+
+runs:
+    using: composite
+    steps:
+        - name: Setup Node
+          uses: actions/setup-node@v2
+          with:
+              node-version: 16.x
+              cache: npm
+              cache-dependency-path: ./package-lock.json
+        - name: Install Dependencies
+          shell: bash
+          run: npm ci

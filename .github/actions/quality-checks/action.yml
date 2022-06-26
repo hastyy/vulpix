@@ -1,0 +1,11 @@
+name: Quality Checks
+description: Runs the linter, formatter, Typescript typechecking and tests
+
+runs:
+    using: composite
+    steps:
+        - name: Setup CI Environment
+          uses: ./.github/actions/setup-ci-environment
+        - name: Run Quality Checks
+          shell: bash
+          run: npm run quality-checks
