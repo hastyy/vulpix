@@ -1,8 +1,8 @@
 import { Deffered } from '../util/async';
 import { Queue, Buffer } from '../util/ds';
 import { ChannelClosedException } from './channel-closed-exception';
-import { ReadChannel } from './read-channel';
-import { WriteChannel } from './write-channel';
+import { type ReadChannel } from './read-channel';
+import { type WriteChannel } from './write-channel';
 
 class DeferredSend<M> extends Deffered<void> {
     public readonly message: M;

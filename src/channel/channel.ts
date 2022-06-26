@@ -1,6 +1,6 @@
 import { BufferedChannel } from './buffered-channel';
-import { ReadChannel } from './read-channel';
-import { WriteChannel } from './write-channel';
+import { type ReadChannel } from './read-channel';
+import { type WriteChannel } from './write-channel';
 
 type Channel<M> = ReadChannel<M> & WriteChannel<M>;
 
