@@ -382,10 +382,10 @@ We ran each of the presented cases with the same arguments in order to measure h
 
 **NOTE**: `BASE_LATENCY`, `MIN_LATENCY_INCREMENT` and `MAX_LATENCY_INCREMENT` are a way to simulate network latency for each API call. We fixed the combination of these values at 50ms in order to avoid skewed results.
 
-| **Benchmark #** | **# Configured Workers** | **Max Network I/O Pps On-The-Fly** | **Workflow Duration** |
+| **Benchmark #** | **# Configured Workers** | **Max Network I/O Ops On-The-Fly** | **Workflow Duration** |
 |:---------------:|:------------------------:|:----------------------------------:|:---------------------:|
 |        1        |             -            |                  1                 |        839348ms       |
 |        2        |             -            |                  2                 |        544526ms       |
-|        3        |             4            |                  4                 |        153953ms       |
+|        3        |             4            |                  8                 |        153953ms       |
 |        4        |             4            |                 13                 |        67397ms        |
 
