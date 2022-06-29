@@ -2,17 +2,181 @@
 
 ![Vulpix](https://archives.bulbagarden.net/media/upload/thumb/6/60/037Vulpix.png/200px-037Vulpix.png)
 
-A small NodeJS library providing a CSP-like channel abstraction for data exchange between application components. Given that NodeJS is a single-threaded runtime, such an abstraction might seem unnecessary at best. However, it is very suitable for I/O (filesystem, networking) intensive workflows. Even though we can do all kinds of I/O through NodeJS, the actual I/O happens away from our application code: what our code actually does is schedule the work and register more code to run when the results are available. This kind of code is very fast to execute and hardly ever clogs the call stack. On the other hand, NodeJS can handle lots and lots of I/O at the same time, queuing the results to be consumed by our application as soon as these are available.
+A small NodeJS library providing CSP-like channels for data exchange between application components.
 
-With the advent of async/await, writing code that reads synchronously but executes asynchronously (meaning it suspends execution when it can't move forward without a result that still hasn't arrived yet and resumes later when it does, releasing the call stack for other subroutine to execute in the meantime) became a standard. This is great because now we can write easier to understand, procedural code, without giving up on the advantages of being asynchronous and non-blocking. However, when writting this kind of code we tend to miss opportunities to parallelise I/O. This means that we might not reach the optimal throughput for our applications.
+## Installation
 
-The paradigm that Vulpix brings forward encourages the segregation of more granular components in a data processing pipeline. These components (called processes from here on) communicate with each other by messages sent through channels. Each process might schedule several I/O operations on its own and should only take the call stack to forward results or schedule new I/O requests so that it does not starve the other processes. This means that even an I/O intensive application with a high number of processes should not have any starved by the others. (Note that this is already the paradigm used in NodeJS -- if you have a CPU-intensive you use you might want to look into other runtimes or solutions)
+```
+npm install vulpix
+```
+
+## Core Concepts
+
+* **Channel**: message delivery pipe between two processes
+* **Process**: (usually long-running) async function writing to and/or reading from channels
+* **Workflow**: encapsulation of a coarse unit of work carried out by several processes
+
+## How to Use
+
+To get started, you can import the `channel` factory and use it to create a channel:
+
+```ts
+import { channel } from 'vulpix'
+
+const numbers = channel<number>();
+```
+
+The channel `numbers` is of type `Channel<number>`.
+
+After creating a channel you can use it to exchange messages between processes. Below is a quick example of how we could use the previously created channel:
+
+### Quick Example #1
+
+```ts
+import { channel, WriteChannel, ReadChannel } from 'vulpix';
+
+async function throttledNumberProducer(numbers: WriteChannel<number>) {
+    for (let i = 0; i < 42; i++) {
+        await sleep(1_000 /* milliseconds */);
+        await numbers.send(i);
+        
+    }
+    numbers.close();
+}
+
+async function numbersEchoer(numbers: ReadChannel<number>) {
+    for await (const n of numbers) {
+        console.log(`I have received the number ${n}!`);
+    }
+    console.log('No more numbers for me :(');
+}
+
+async function main() {
+    const numbers = channel<number>();
+
+    await Promise.all([
+        throttledNumberProducer(numbers),
+        numbersEchoer(numbers)
+    ]);
+}
+
+main();
+```
+
+In this example we have two processes:
+
+* `throttledNumberProducer` writing messages into the channel;
+* `numbersEchoer` reading from the channel.
+
+Note how `throttledNumberProducer` defines a parameter of type `WriteChannel<number>` whilst `numbersEchoer` expects a `ReadChannel<number>`. Any instance returned by the `channel` factory adheres to these interfaces. By specifying whether we intend to read from or write to a channel, we make the code more explicit. We also remove the chance of writting to and reading from the same channel, which would likely be an error on our side. **Processes writing to a channel should not read from it, and vice-versa.**
+
+It is also a good practice to be the writer closing the channel when it's done writing. This will signal the reader(s) that there will be no more messages coming from that channel. In this sense, `WriteChannel<M>` exposes two methods:
+
+* `send(message: M): void | Promise<void>`
+* `close(): void`
+
+On the reader side there are no explicitly exposed methods. However, `ReadChannel<M>` (and therefore `Channel<M>`) is an `AsyncIterable<M>`, meaning that we can iterate the incoming messages with a `for await (const msg of channel) {...}` loop. The body of the loop executes each time a new message arrives, and we break out of the loop when the channel is closed and there are no messages left to be received. If we ever need to break off the loop before the channel is closed, it is up to the application logic to do so.
+
+Another thing to note is the return type of `send`, which is `void | Promise<void>`. The operation will return a Promise each time the channel cannot immediately accept the message. This is when the channel is out of buffering capacity and there are no pending readers on the other end. Because we are not sure the message can be delivered at this point, it is a good practice to call `send` with `await` as seen in the example. This means that the writing process will suspend execution until the message is accepted by the channel, so we can keep track of which messages were accepted. It is also good to suspend execution at these suspension points because are releasing the call stack and giving other processes the ooportunity to make progress.
+
+We talked about buffering. By default, a channel returned by the `channel` factory has no buffering capacity, meaning that each writer will always receive a Promise by sending a message when there are no readers currently waiting for messages, and each reader will suspend in its loop until there are any new messages in the channel. But in specific situations where the writer might write messages quicker than the reader(s) can read, we might want to create a channel with a specific buffering capacity:
+
+```ts
+// Creates a channel with the capacity to buffer up to 10 messages
+const numbers = channel<number>(10);
+```
+
+With this, even if there are no readers waiting for a new message, as long as there still is buffering capacity in the channel, it will automatically accept the message. In these cases, if you know the writer has more messages it can put in the channel, you might avoid suspending until either you run out of messages or buffer is full:
+
+```ts
+const sendOp = numbers.send(i);
+if (sendOp instanceof Promise) {
+    await sendOp;
+}
+```
+
+It is important to know that it is safe to call `send` with `await` even when it returns `void`. This is equivalent to awaiting a resolved Promise. The writer will still suspend (release the call stack) but a new task will automatically be added to the runtime microTasks queue, meaning that the writer will resume execution as soon as we process any other Promise that might have resolved in the meantime.
+
+A last remark to Example #1: notice the use of `Promise.all` to wrap the spawned processes. This is not required, but it is a good practice to only return out of an async function after all its spawned Promises have settled, otherwise we might have leaks in your application (memory, resources, you name it). We will see how we can handle this and other concerns with `workflow`.
+
+A channel can be read and written to by several processes. It is usual for these processes to not know each each other.
+
+### Quick Example #2
+
+```ts
+import { channel, WriteChannel, ReadChannel, WaitingGroup } from 'vulpix';
+
+async function throttledNumberProducer(
+    numbers: WriteChannel<number>,
+    start: number,
+    increment: number,
+    wg: WaitingGroup
+) {
+    for (let i = start; i < 42; i += increment) {
+        await sleep(1_000 /* milliseconds */);
+        await numbers.send(i);
+    }
+    wg.done();
+}
+
+async function numbersEchoer(numbers: ReadChannel<number>, id: number) {
+    for await (const n of numbers) {
+        console.log(`Reader with id ${id} has received the number ${n}!`);
+    }
+    console.log(`No more numbers for reader with id ${id} :(`);
+}
+
+async function main() {
+    const numbers = channel<number>();
+    const processes: Array<Promise<void>> = [];
+    const NUM_PRODUCERS = 4;
+    const NUM_CONSUMERS = 2;
+
+    const wg = new WaitingGroup(NUM_PRODUCERS);
+    wg.then(() => numbers.close());
+
+    for (let i = 0; i < NUM_PRODUCERS; i++) {
+        processes.push(throttledNumberProducer(numbers, i, NUM_PRODUCERS, wg));
+    }
+
+    for (let i = 0; i < NUM_CONSUMERS; i++) {
+        processes.push(numbersEchoer(numbers, i));
+    }
+
+    await Promise.all(processes);
+}
+
+main();
+```
+
+The writer should be the one closing the channel. But when we have multiple writers, which one should close it? Note that once a channel is closed, trying to send any message through it throws an Error. The answer is: none of the writer processes. For this we actually need a synchronization primitive: a WaitingGroup.
+
+In the example we create `WaitingGroup` giving it the number of writer processes for the channel. After each writer is done, it should call `wg.done()` to let it know it is finished. After `NUM_PRODUCERS` call `wg.done()`, the waiting group resolves its internal promise and runs the code registered in `.then`.
+
+**NOTE**: An instance of `WaitingGroup` is a `Thenable<T>`, meaning that it works like a Promise that can resolve but never reject. We can also use it with `await`.
+
+When having multiple readers there is nothing new to worry about. The only thing to keep in mind are the channel guarantees:
+
+* Each message is only delivered once, meaning that multiple readers will be competing for the messages since only one of them will receive each of the messages;
+* The channel has FIFO guarantees, meaning that messages are delivered in the order that they are sent.
+
+## Worflow
+
+TODO
+
+## Why
+
+Given that NodeJS is a single-threaded runtime, channels - usually seen as a synchronization primitive for concurrent systems - might seem unnecessary at best. However, it is very suitable for I/O (filesystem, networking) intensive workflows. Even though we can do all kinds of I/O through NodeJS, the actual I/O happens away from our application code: what our code actually does is schedule the work and register more code to run when the results are available. This kind of code is very fast to execute and hardly ever clogs the call stack. On the other hand, NodeJS can handle lots and lots of I/O at the same time, queuing the results to be consumed by our application as soon as these are available.
+
+With the advent of async/await, writing code that reads synchronously but executes asynchronously (meaning that it suspends execution when it can't move forward without a result that hasn't arrived yet, and resumes later when it arrives, releasing the call stack for other subroutine to execute in the meantime) became a standard. This is great because now we can write easier to understand, procedural code, without giving up on the advantages of asynchronous, non-blocking code. However, when writting this kind of code we tend to miss opportunities to parallelise I/O. This means that we might not reach the optimal throughput for our applications.
+
+The paradigm that Vulpix brings forward encourages the segregation of more granular components in a data processing pipeline. These components (called processes from here on) communicate with each other by messages sent through channels. Each process might schedule several I/O operations on its own and should only take the call stack to forward results or schedule new I/O, so that it does not starve the other processes. This means that even with lots of processes, each one should get the chance to make progress every now and then. (Note that this is already the paradigm used in NodeJS -- if you have a CPU-intensive use-case you might want to look into other runtimes or solutions)
 
 Process granularity helps increasing the number of I/O operations an application can be doing at a single point in time. Moreover, it enables more granular and testable components, as well as many other patterns that are harder to achieve under the conventional paradigm.
 
 But enough with the chit-chat, let's look at an example and the observed results.
 
-## Benchmarks
+### Benchmarks
 
 To test Vulpix we created a scenario inspired by a real-world use-case for data extraction, transformation (or aggregation) and sink. The scenario is as follows:
 
@@ -225,10 +389,3 @@ We ran each of the presented cases with the same arguments in order to measure h
 |        3        |             4            |                  4                 |        153953ms       |
 |        4        |             4            |                 13                 |        67397ms        |
 
-## Channels
-
-TODO
-
-## Workflow
-
-TODO
