@@ -1,6 +1,6 @@
 {
   "name": "vulpix",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CSP-like channels library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
