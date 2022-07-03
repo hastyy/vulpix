@@ -1,4 +1,5 @@
 import { WorkflowContext } from './workflow-context';
+import { sleep } from '../util/async/sleep';
 
 describe('WorkflowContext', () => {
     describe('when launching a process', () => {
@@ -82,7 +83,7 @@ describe('WorkflowContext', () => {
 
             root.onCancel(spy);
 
-            await child.cancel(false);
+            await child.cancel({ bubbleUp: false });
 
             expect(spy).not.toHaveBeenCalled();
         });
@@ -120,7 +121,7 @@ describe('WorkflowContext', () => {
             child2child1.onCancel(spy2);
             child2child2.onCancel(spy3);
 
-            await child1.cancel(false);
+            await child1.cancel({ bubbleUp: false });
 
             expect(spy1).not.toHaveBeenCalled();
             expect(spy2).not.toHaveBeenCalled();
@@ -152,6 +153,34 @@ describe('WorkflowContext', () => {
 
             expect(spy1.mock.calls[0][0]).toBe(1);
             expect(spy2.mock.calls[0][0]).toBe(2);
+        });
+        describe('when processes throw', () => {
+            it('should only throw the first error after all launched processes and child contexts have completed', async () => {
+                const ctx = new WorkflowContext();
+                const err1 = new Error('One');
+                const err2 = new Error('Two');
+
+                const p1 = ctx.launch(async () => {
+                    await sleep(0);
+                });
+                const p2 = ctx.launch(async () => {
+                    await sleep(0);
+                    throw err1;
+                });
+                const p3 = ctx.launch(async () => {
+                    await sleep(0);
+                });
+                const p4 = ctx.launch(async () => {
+                    await sleep(0);
+                    throw err2;
+                });
+
+                await expect(ctx.waitForCompletion()).rejects.toThrow(err1);
+                expect(p1).resolves.toBe(void 0);
+                expect(p2).rejects.toBe(err1);
+                expect(p3).resolves.toBe(void 0);
+                expect(p4).rejects.toBe(err2);
+            });
         });
     });
 });

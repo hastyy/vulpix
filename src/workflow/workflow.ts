@@ -1,14 +1,28 @@
-import { WorkflowContext, WorkflowProcess } from './workflow-context';
+import { Context, WorkflowContext } from './workflow-context';
 
-async function workflow(mainProcess: WorkflowProcess) {
+interface WorkflowCallback {
+    (ctx: Context): void | Promise<void>;
+}
+
+async function workflow(cb: WorkflowCallback) {
     const ctx = new WorkflowContext();
+    let error: Error | null = null;
     try {
-        await mainProcess(ctx);
-    } catch (error) {
+        await cb(ctx);
+    } catch (e) {
         await ctx.cancel();
-        throw error;
+        error = e as Error;
     } finally {
-        await ctx.waitForCompletion();
+        try {
+            await ctx.waitForCompletion();
+        } catch (e) {
+            if (error === null) {
+                error = e as Error;
+            }
+        }
+    }
+    if (error !== null) {
+        throw error;
     }
 }
 
