@@ -1,29 +1,48 @@
-import { Context, WorkflowContext } from './workflow-context';
+/* eslint-disable no-unsafe-finally */
 
-interface WorkflowCallback {
-    (ctx: Context): void | Promise<void>;
+import { Result } from '../result';
+import { type Context, WorkflowContext } from './context';
+
+interface WorkflowSetup {
+    (ctx: Context): void;
 }
 
-async function workflow(cb: WorkflowCallback) {
-    const ctx = new WorkflowContext();
-    let error: Error | null = null;
+type WorkflowOptions = {
+    signal: AbortSignal;
+};
+
+async function workflow(setup: WorkflowSetup, options: Partial<WorkflowOptions> = {}): Promise<Result<void>> {
+    if (options.signal?.aborted) {
+        return Result.error(options.signal.reason);
+    }
+    const rootCtx = new WorkflowContext();
+    const abortEventListener = () => {
+        const errorOptions = options.signal?.reason instanceof Error ? { error: options.signal.reason } : {};
+        rootCtx.cancel(errorOptions);
+    };
+    options.signal?.addEventListener('abort', abortEventListener, { once: true });
     try {
-        await cb(ctx);
-    } catch (e) {
-        await ctx.cancel();
-        error = e as Error;
+        setup(rootCtx);
+    } catch (err) {
+        if (err instanceof Error) {
+            return Result.error(err);
+        }
+        throw err;
     } finally {
         try {
-            await ctx.waitForCompletion();
-        } catch (e) {
-            if (error === null) {
-                error = e as Error;
+            await rootCtx.waitForCompletion();
+        } catch (err) {
+            if (err instanceof Error) {
+                // Might never hit this branch since all Error objects thrown from
+                // routines are wrapped in ctx cancelation.
+                return Result.error(err);
             }
+            throw err;
+        } finally {
+            options.signal?.removeEventListener('abort', abortEventListener);
         }
     }
-    if (error !== null) {
-        throw error;
-    }
+    return rootCtx.hasError() ? Result.error(rootCtx.getError()) : Result.ok();
 }
 
 export { workflow };

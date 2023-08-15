@@ -1,3 +1,11 @@
-export { channel, ChannelClosedException, type Channel, type ReadChannel, type WriteChannel } from './channel';
-export { workflow, type Context } from './workflow';
-export { WaitingGroup } from './util/async';
+export { type WaitGroup, waitGroup } from './waitgroup';
+export {
+    type SendChannel,
+    type ReceiveChannel,
+    type CloseableSendChannel,
+    type Channel,
+    type CloseableChannel,
+    type ChannelWithWaitGroup,
+    channel,
+} from './channel';
+export { type Context, workflow } from './workflow';

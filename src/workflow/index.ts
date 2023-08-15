@@ -1,2 +1,2 @@
-export { type Context } from './workflow-context';
 export { workflow } from './workflow';
+export { type Context } from './context';

@@ -1,44 +1,37 @@
-import fs from 'fs';
-import { duration } from '../src/util/time';
-import { getPosts, getPost, getComments, savePostWithComments } from './lib';
+import { getPosts, getPostDetails, getComments, savePostWithComments, type Post } from './lib';
+import { duration } from './utils';
+
+const PAGE_SIZE = Number(process.env.PAGE_SIZE);
+const PARALLELISM = Number(process.env.PARALLELISM);
+
+async function processPost({ id }: Post) {
+    const [post, comments] = await Promise.all([getPostDetails(id), getComments(id)]);
+
+    const combined = {
+        ...post,
+        comments,
+    };
+
+    await savePostWithComments(combined);
+}
+
+async function benchmark() {
+    let page = 1;
+    let posts: Array<Post>;
+    do {
+        posts = await getPosts(page, PAGE_SIZE);
+        let processedPosts = 0;
+        while (processedPosts < posts.length) {
+            const remaining = posts.length - processedPosts;
+            const postsToProcess = posts.slice(processedPosts, processedPosts + Math.min(PARALLELISM, remaining));
+            await Promise.all(postsToProcess.map(processPost));
+            processedPosts += Math.min(PARALLELISM, remaining);
+        }
+        page++;
+    } while (posts.length === PAGE_SIZE);
+}
 
 (async function main() {
-    const PAGE_SIZE = Number(process.env.PAGE_SIZE);
-    const NUM_OF_WORKERS = Number(process.env.NUM_OF_WORKERS);
-
-    const [ellapsedTimeMs] = await duration(async () => {
-        for (let page = 1; ; page++) {
-            const postsPage = await getPosts(page, PAGE_SIZE);
-            const workers: Array<Promise<void>> = [];
-            let postsProcessed = 0; // Can use this since runtime is single-thread so no sync needed
-            for (let i = 0; i < NUM_OF_WORKERS; i++) {
-                workers.push(
-                    (async function (startingIndex) {
-                        for (
-                            let j = startingIndex;
-                            postsProcessed < postsPage.length && j < postsPage.length;
-                            j = ++postsProcessed
-                        ) {
-                            const { id } = postsPage[j];
-                            const [post, comments] = await Promise.all([getPost(id), getComments(id)]);
-
-                            const combined = {
-                                ...post,
-                                comments,
-                            };
-
-                            await savePostWithComments(combined);
-                        }
-                    })(i)
-                );
-            }
-            await Promise.all(workers);
-            if (postsPage.length < PAGE_SIZE) {
-                break;
-            }
-        }
-    })();
-
+    const [ellapsedTimeMs] = await duration(benchmark)();
     console.log(`Whole process took ${ellapsedTimeMs}ms to run.`);
-    fs.appendFileSync('benchmark/results.txt', `Benchmark 3: ${ellapsedTimeMs}ms\n`);
 })();

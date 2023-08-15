@@ -1,125 +1,102 @@
-import { sleep } from '../util/async/sleep';
 import { workflow } from './workflow';
+import { StatefulPromise } from '../async/stateful-promise';
+import assert from 'assert';
+import { setTimeout } from 'timers/promises';
 
 describe('workflow', () => {
-    it('should wait for all processes to complete before returning', async () => {
-        const spy = jest.fn();
-        const wf = workflow((ctx) => {
-            ctx.launch(async () => {
-                await sleep(0);
-                spy();
-            });
-            ctx.launch(async () => {
-                await sleep(0);
-                throw new Error();
-            });
-            ctx.launch(async () => {
-                await sleep(0);
-                spy();
-            });
-        });
-
-        await expect(wf).rejects.toThrowError();
-        expect(spy).toHaveBeenCalledTimes(2);
-    });
-    describe('when it throws from the callback', () => {
-        it('should throw that error', async () => {
-            const error = new Error('From callback');
-            const wf = workflow((ctx) => {
-                ctx.launch(() => sleep(0));
-                ctx.launch(() => sleep(0));
-                throw error;
-            });
-
-            await expect(wf).rejects.toThrow(error);
-        });
-        it('should cancel the context', async () => {
-            const error = new Error('From callback');
-            const spy = jest.fn();
-            const wf = workflow((ctx) => {
-                ctx.onCancel(spy);
-                ctx.launch(() => sleep(0));
-                ctx.launch(() => sleep(0));
-                throw error;
-            });
-
-            await expect(wf).rejects.toThrow(error);
-            expect(spy).toHaveBeenCalledTimes(1);
-        });
-        it('should wait for all processes to complete', async () => {
-            const error = new Error('From callback');
-            const processes: Array<Promise<void>> = [];
-            const wf = workflow((ctx) => {
-                processes.push(ctx.launch(() => sleep(0)));
-                processes.push(ctx.launch(() => sleep(0)));
-                throw error;
-            });
-
-            await expect(wf).rejects.toThrow(error);
-            for (const process of processes) {
-                expect(process).resolves.toBe(void 0);
+    it('should wait for all routines to finish', async () => {
+        const routines: Array<StatefulPromise<void>> = [];
+        const result = await workflow((ctx) => {
+            for (let i = 0; i < 3; i++) {
+                ctx.launch(() => {
+                    const promise = new StatefulPromise<void>((resolve) => {
+                        global.setTimeout(resolve, i * 10 + 10);
+                    });
+                    routines.push(promise);
+                    return promise;
+                });
             }
         });
+        assert(result.ok);
+        for (const routine of routines) {
+            expect(routine.isResolved).toBe(true);
+        }
     });
-    describe('when it throws from an initialized process', () => {
-        it('should throw that error', async () => {
-            const error = new Error('From callback');
-            const wf = workflow((ctx) => {
-                ctx.launch(async () => {
-                    await sleep(0);
-                    throw error;
-                });
-                ctx.launch(() => sleep(0));
-            });
-
-            await expect(wf).rejects.toThrow(error);
+    it('should immediately return an error if workflow has already been canceled', async () => {
+        const abortController = new AbortController();
+        const { signal } = abortController;
+        const spy = jest.fn();
+        const error = new Error('Aborted');
+        abortController.abort(error); // abort is called even before we start the workflow
+        const result = await workflow(spy, { signal });
+        expect(spy).not.toHaveBeenCalled();
+        assert(!result.ok);
+        expect(result.error).toBe(error);
+    });
+    it('should return an error if one is thrown from setup', async () => {
+        const spy = jest.fn();
+        const error = new Error('Setup error');
+        const result = await workflow(() => {
+            if (Math.random() < 2) {
+                throw error;
+            }
+            spy();
         });
-        it('should cancel the context', async () => {
-            const error = new Error('From callback');
-            const spy = jest.fn();
-            const wf = workflow((ctx) => {
-                ctx.onCancel(spy);
-                ctx.launch(async () => {
-                    await sleep(0);
-                    throw error;
-                });
-                ctx.launch(() => sleep(0));
+        assert(!result.ok);
+        expect(result.error).toBe(error);
+        expect(spy).not.toHaveBeenCalled();
+    });
+    it('should throw if something other than an Error object is thrown from setup', async () => {
+        const spy = jest.fn();
+        const str = 'not an Error object';
+        try {
+            await workflow(() => {
+                if (Math.random() < 2) {
+                    throw str;
+                }
+                spy();
             });
-
-            await expect(wf).rejects.toThrow(error);
-            expect(spy).toHaveBeenCalledTimes(1);
-        });
-        it('should wait for all processes to complete', async () => {
-            const error = new Error('From callback');
-            const processes: Array<Promise<void>> = [];
-            const wf = workflow((ctx) => {
-                processes.push(
-                    ctx.launch(async () => {
-                        await sleep(0);
-                        throw error;
-                    })
-                );
-                processes.push(ctx.launch(() => sleep(0)));
-            });
-
-            await expect(wf).rejects.toThrow(error);
-            expect(processes[0]).rejects.toThrow(error);
-            expect(processes[1]).resolves.toBe(void 0);
-        });
-        it('should throw the 1st error even when it throws from more than one process', async () => {
-            const error = new Error('From callback');
-            const wf = workflow((ctx) => {
+        } catch (err) {
+            expect(err).toBe(str);
+        }
+        expect(spy).not.toHaveBeenCalled();
+    });
+    it('should throw if something other than an Error object is thrown from a routine', async () => {
+        const spy = jest.fn();
+        const str = 'not an Error object';
+        try {
+            await workflow((ctx) => {
                 ctx.launch(async () => {
-                    await sleep(0);
-                    throw error; // always throws 1st
-                });
-                ctx.launch(async () => {
-                    await sleep(0);
-                    throw new Error('Other error'); // always throws after the other process
+                    if (Math.random() < 2) {
+                        throw str;
+                    }
+                    spy();
                 });
             });
-
-            await expect(wf).rejects.toThrow(error);
-        });
+        } catch (err) {
+            expect(err).toBe(str);
+        }
+        expect(spy).not.toHaveBeenCalled();
+    });
+    it('should return an error if the context has been canceled', async () => {
+        const error = new Error('Aborted');
+        const spy = jest.fn();
+        const abortController = new AbortController();
+        const { signal } = abortController;
+        global.setTimeout(() => abortController.abort(error), 10);
+        const result = await workflow(
+            (ctx) => {
+                ctx.launch(async (ctx) => {
+                    const abortController = new AbortController();
+                    const { signal } = abortController;
+                    await ctx.withCancelation(setTimeout(100, void 0, { signal }), abortController);
+                });
+                spy();
+            },
+            { signal }
+        );
+        assert(!result.ok);
+        expect(result.error).toBe(error);
+        expect(spy).toHaveBeenCalledTimes(1);
     });
 });
