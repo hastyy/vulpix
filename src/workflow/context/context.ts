@@ -204,7 +204,7 @@ class WorkflowContext implements Context {
     async waitForCompletion() {
         const childrenCompletion = this.children.map((childCtx) => childCtx.waitForCompletion());
         const dependencies = this.routine ? [this.routine].concat(childrenCompletion) : childrenCompletion;
-        await Promise.allSettled(childrenCompletion.concat(dependencies));
+        await Promise.allSettled(dependencies);
     }
 
     private setRoutine(routine: RoutineRef) {
