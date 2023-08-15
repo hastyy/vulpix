@@ -24,7 +24,9 @@
   },
   "keywords": [
     "channels",
-    "csp"
+    "csp",
+    "waitgroup",
+    "workflow"
   ],
   "author": "João Dias <https://github.com/hastyy>",
   "license": "MIT",
@@ -34,7 +36,7 @@
   },
   "devDependencies": {
     "@types/jest": "^27.4.0",
-    "@types/node": "^17.0.19",
+    "@types/node": "^20.4.8",
     "@typescript-eslint/eslint-plugin": "^5.29.0",
     "@typescript-eslint/parser": "^5.29.0",
     "eslint": "8.15.0",

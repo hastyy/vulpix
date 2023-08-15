@@ -1,8 +1,6 @@
 # Vulpix
 
-![Vulpix](https://archives.bulbagarden.net/media/upload/thumb/6/60/037Vulpix.png/200px-037Vulpix.png)
-
-A small NodeJS library providing CSP-like channels for data exchange between application components.
+<img src="https://archives.bulbagarden.net/media/upload/0/06/0037Vulpix.png" alt="Vulpix" style="width: 200px; height: auto;" />
 
 ## Installation
 
@@ -10,188 +8,34 @@ A small NodeJS library providing CSP-like channels for data exchange between app
 npm install vulpix
 ```
 
-## Core Concepts
+## What is it?
 
-* **Channel**: message delivery pipe between two processes
-* **Process**: (usually long-running) async function writing to and/or reading from channels
-* **Workflow**: encapsulation of a coarse unit of work carried out by several processes
+Vulpix is a small NodeJS library providing CSP([Communicating Synchronous Processes](https://en.wikipedia.org/wiki/Communicating_sequential_processes))-like abstractions similar to those present in other programming languages such as Go and Kotlin.
 
-## How to Use
+## Why is it?
 
-To get started, you can import the `channel` factory and use it to create a channel:
+Given that NodeJS is a single-threaded runtime, synchronisation primitives like channels might seem unnecessary at best. However, these can still prove useful in non-concurrent environments by providing a way to model and even improve the thoughput of I/O intensive workflows.
 
+The paradigm that Vulpix brings forward encourages the segregation of more granular components in an I/O intensive application. These components (called routines from here on) communicate with each other by messages sent through channels.
+
+### Example
+
+Assume the following scenario:
+```
+For each Post entity in source A, we need to grab the corresponding PostDetails and PostComments from source B and C, respectively.
+
+Source A exposes a paginated API.
+
+We need to merge PostDetails and PostComments into sink D.
+
+We can't process more than N posts at a time on each service, N being a parameterisable value.
+```
+
+We have the following API:
 ```ts
-import { channel } from 'vulpix'
+type Post = Pick<PostDetails, 'id'>;
 
-const numbers = channel<number>();
-```
-
-The channel `numbers` is of type `Channel<number>`.
-
-After creating a channel you can use it to exchange messages between processes. Below is a quick example of how we could use the previously created channel:
-
-### Quick Example #1
-
-```ts
-import { channel, WriteChannel, ReadChannel } from 'vulpix';
-
-async function throttledNumberProducer(numbers: WriteChannel<number>) {
-    for (let i = 0; i < 42; i++) {
-        await sleep(1_000 /* milliseconds */);
-        await numbers.send(i);
-        
-    }
-    numbers.close();
-}
-
-async function numbersEchoer(numbers: ReadChannel<number>) {
-    for await (const n of numbers) {
-        console.log(`I have received the number ${n}!`);
-    }
-    console.log('No more numbers for me :(');
-}
-
-async function main() {
-    const numbers = channel<number>();
-
-    await Promise.all([
-        throttledNumberProducer(numbers),
-        numbersEchoer(numbers)
-    ]);
-}
-
-main();
-```
-
-In this example we have two processes:
-
-* `throttledNumberProducer` writing messages into the channel;
-* `numbersEchoer` reading from the channel.
-
-Note how `throttledNumberProducer` defines a parameter of type `WriteChannel<number>` whilst `numbersEchoer` expects a `ReadChannel<number>`. Any instance returned by the `channel` factory adheres to these interfaces. By specifying whether we intend to read from or write to a channel, we make the code more explicit. We also remove the chance of writting to and reading from the same channel, which would likely be an error on our side. **Processes writing to a channel should not read from it, and vice-versa.**
-
-It is also a good practice to be the writer closing the channel when it's done writing. This will signal the reader(s) that there will be no more messages coming from that channel. In this sense, `WriteChannel<M>` exposes two methods:
-
-* `send(message: M): void | Promise<void>`
-* `close(): void`
-
-On the reader side there are no explicitly exposed methods. However, `ReadChannel<M>` (and therefore `Channel<M>`) is an `AsyncIterable<M>`, meaning that we can iterate the incoming messages with a `for await (const msg of channel) {...}` loop. The body of the loop executes each time a new message arrives, and we break out of the loop when the channel is closed and there are no messages left to be received. If we ever need to break off the loop before the channel is closed, it is up to the application logic to do so.
-
-Another thing to note is the return type of `send`, which is `void | Promise<void>`. The operation will return a Promise each time the channel cannot immediately accept the message. This is when the channel is out of buffering capacity and there are no pending readers on the other end. Because we are not sure the message can be delivered at this point, it is a good practice to call `send` with `await` as seen in the example. This means that the writing process will suspend execution until the message is accepted by the channel, so we can keep track of which messages were accepted. It is also good to suspend execution at these suspension points because are releasing the call stack and giving other processes the ooportunity to make progress.
-
-We talked about buffering. By default, a channel returned by the `channel` factory has no buffering capacity, meaning that each writer will always receive a Promise by sending a message when there are no readers currently waiting for messages, and each reader will suspend in its loop until there are any new messages in the channel. But in specific situations where the writer might write messages quicker than the reader(s) can read, we might want to create a channel with a specific buffering capacity:
-
-```ts
-// Creates a channel with the capacity to buffer up to 10 messages
-const numbers = channel<number>(10);
-```
-
-With this, even if there are no readers waiting for a new message, as long as there still is buffering capacity in the channel, it will automatically accept the message. In these cases, if you know the writer has more messages it can put in the channel, you might avoid suspending until either you run out of messages or buffer is full:
-
-```ts
-const sendOp = numbers.send(i);
-if (sendOp instanceof Promise) {
-    await sendOp;
-}
-```
-
-It is important to know that it is safe to call `send` with `await` even when it returns `void`. This is equivalent to awaiting a resolved Promise. The writer will still suspend (release the call stack) but a new task will automatically be added to the runtime microTasks queue, meaning that the writer will resume execution as soon as we process any other Promise that might have resolved in the meantime.
-
-A last remark to Example #1: notice the use of `Promise.all` to wrap the spawned processes. This is not required, but it is a good practice to only return out of an async function after all its spawned Promises have settled, otherwise we might have leaks in your application (memory, resources, you name it). We will see how we can handle this and other concerns with `workflow`.
-
-A channel can be read and written to by several processes. It is usual for these processes to not know each each other.
-
-### Quick Example #2
-
-```ts
-import { channel, WriteChannel, ReadChannel, WaitingGroup } from 'vulpix';
-
-async function throttledNumberProducer(
-    numbers: WriteChannel<number>,
-    start: number,
-    increment: number,
-    wg: WaitingGroup
-) {
-    for (let i = start; i < 42; i += increment) {
-        await sleep(1_000 /* milliseconds */);
-        await numbers.send(i);
-    }
-    wg.done();
-}
-
-async function numbersEchoer(numbers: ReadChannel<number>, id: number) {
-    for await (const n of numbers) {
-        console.log(`Reader with id ${id} has received the number ${n}!`);
-    }
-    console.log(`No more numbers for reader with id ${id} :(`);
-}
-
-async function main() {
-    const numbers = channel<number>();
-    const processes: Array<Promise<void>> = [];
-    const NUM_PRODUCERS = 4;
-    const NUM_CONSUMERS = 2;
-
-    const wg = new WaitingGroup(NUM_PRODUCERS);
-    wg.then(() => numbers.close());
-
-    for (let i = 0; i < NUM_PRODUCERS; i++) {
-        processes.push(throttledNumberProducer(numbers, i, NUM_PRODUCERS, wg));
-    }
-
-    for (let i = 0; i < NUM_CONSUMERS; i++) {
-        processes.push(numbersEchoer(numbers, i));
-    }
-
-    await Promise.all(processes);
-}
-
-main();
-```
-
-The writer should be the one closing the channel. But when we have multiple writers, which one should close it? Note that once a channel is closed, trying to send any message through it throws an Error. The answer is: none of the writer processes. For this we actually need a synchronization primitive: a WaitingGroup.
-
-In the example we create `WaitingGroup` giving it the number of writer processes for the channel. After each writer is done, it should call `wg.done()` to let it know it is finished. After `NUM_PRODUCERS` call `wg.done()`, the waiting group resolves its internal promise and runs the code registered in `.then`.
-
-**NOTE**: An instance of `WaitingGroup` is a `Thenable<T>`, meaning that it works like a Promise that can resolve but never reject. We can also use it with `await`.
-
-When having multiple readers there is nothing new to worry about. The only thing to keep in mind are the channel guarantees:
-
-* Each message is only delivered once, meaning that multiple readers will be competing for the messages since only one of them will receive each of the messages;
-* The channel has FIFO guarantees, meaning that messages are delivered in the order that they are sent.
-
-## Worflow
-
-TODO
-
-## Why
-
-Given that NodeJS is a single-threaded runtime, channels - usually seen as a synchronization primitive for concurrent systems - might seem unnecessary at best. However, it is very suitable for I/O (filesystem, networking) intensive workflows. Even though we can do all kinds of I/O through NodeJS, the actual I/O happens away from our application code: what our code actually does is schedule the work and register more code to run when the results are available. This kind of code is very fast to execute and hardly ever clogs the call stack. On the other hand, NodeJS can handle lots and lots of I/O at the same time, queuing the results to be consumed by our application as soon as these are available.
-
-With the advent of async/await, writing code that reads synchronously but executes asynchronously (meaning that it suspends execution when it can't move forward without a result that hasn't arrived yet, and resumes later when it arrives, releasing the call stack for other subroutine to execute in the meantime) became a standard. This is great because now we can write easier to understand, procedural code, without giving up on the advantages of asynchronous, non-blocking code. However, when writting this kind of code we tend to miss opportunities to parallelise I/O. This means that we might not reach the optimal throughput for our applications.
-
-The paradigm that Vulpix brings forward encourages the segregation of more granular components in a data processing pipeline. These components (called processes from here on) communicate with each other by messages sent through channels. Each process might schedule several I/O operations on its own and should only take the call stack to forward results or schedule new I/O, so that it does not starve the other processes. This means that even with lots of processes, each one should get the chance to make progress every now and then. (Note that this is already the paradigm used in NodeJS -- if you have a CPU-intensive use-case you might want to look into other runtimes or solutions)
-
-Process granularity helps increasing the number of I/O operations an application can be doing at a single point in time. Moreover, it enables more granular and testable components, as well as many other patterns that are harder to achieve under the conventional paradigm.
-
-But enough with the chit-chat, let's look at an example and the observed results.
-
-### Benchmarks
-
-To test Vulpix we created a scenario inspired by a real-world use-case for data extraction, transformation (or aggregation) and sink. The scenario is as follows:
-
-```
-We need to extract all Post objects from a paginated API. Each page contains a set of identifiers for different Post objects.
-
-For each identifier we need to grab both its full document information as well as the set of comments related to it.
-
-Once we have these two pieces of data, we must combine them into a single document to store in our own database.
-```
-
-The API available to us is as follows:
-
-```ts
-type Post = {
+type PostDetails = {
     id: number;
     author: string;
     date: Date;
@@ -204,188 +48,244 @@ type PostComment = {
     comment: string;
 };
 
-type PostWithComments = Post & {
+type PostWithComments = PostDetails & {
     comments: Array<PostComment>;
 };
 
-type PostID = Pick<Post, 'id'>;
-
-function getPosts(page: number, pageSize: number): Promise<Array<PostID>>;
-function getPost(id: number): Promise<Post>;
-function getComments(id: number): Promise<Array<PostComment>>;
-function savePostWithComments(post: PostWithComments): Promise<void>;
+function getPosts(page: number, pageSize: number, signal?: AbortSignal): Promise<Array<Post>>;
+function getPostDetails(id: number, signal?: AbortSignal): Promise<PostDetails>;
+function getComments(id: number, signal?: AbortSignal): Promise<Array<PostComment>>;
+function savePostWithComments(post: PostWithComments, signal?: AbortSignal): Promise<void>;
 ```
 
-Seems easy enough, right?
-
-We might start with the most straight-forward solution, where we process each Post object one-by-one:
-
+One very straight-forward solution would be as follows:
 ```ts
-(async function main() {
-    for (let page = 1; ; page++) {
-        const postsPage = await getPosts(page, PAGE_SIZE);
-        for (const { id } of postsPage) {
-            const post = await getPost(id);
-            const comments = await getComments(id);
+// benchmark-1.ts
+let page = 1;
+let posts: Array<Post>;
+do {
+    posts = await getPosts(page, PAGE_SIZE);
+    for (const { id } of posts) {
+        const post = await getPostDetails(id);
+        const comments = await getComments(id);
 
-            const combined = {
-                ...post,
-                comments,
-            };
+        const combined = {
+            ...post,
+            comments,
+        };
 
-            await savePostWithComments(combined);
+        await savePostWithComments(combined);
+    }
+    page++;
+} while (posts.length === PAGE_SIZE);
+```
+This will grab a page of posts and process each one at a time, contacting each source and sync in serial order. There is a clear opportunity to parallelise:
+```ts
+// benchmark-2.ts
+const [post, comments] = await Promise.all([getPostDetails(id), getComments(id)]);
+```
+Since getting the post details and comments are two independent tasks, these can be done at the same time. With this we take full advantage of the data dependencies for a single post and can't parallelise more, since we need the post to be in the list first so we can use its id to grab the details and comments, and then we need those before we compute the final result to save. Still, each post is independent from each other, and can be processed in parallel, up to N posts at a time (currently we ignore N and process posts as if N was always 1).
+
+We can start processing posts in groups of N:
+```ts
+// benchmark-3.ts
+let page = 1;
+let posts: Array<Post>;
+do {
+    posts = await getPosts(page, PAGE_SIZE);
+    let processedPosts = 0;
+    while (processedPosts < posts.length) {
+        const remaining = posts.length - processedPosts;
+        const postsToProcess = posts.slice(processedPosts, processedPosts + Math.min(N, remaining));
+        await Promise.all(postsToProcess.map(processPost));
+        processedPosts += Math.min(N, remaining);
+    }
+    page++;
+} while (posts.length === PAGE_SIZE);
+
+async function processPost({ id }: Post) {
+    const [post, comments] = await Promise.all([getPostDetails(id), getComments(id)]);
+
+    const combined = {
+        ...post,
+        comments,
+    };
+
+    await savePostWithComments(combined);
+}
+```
+This is much better since now we can process N posts at a time in the same way we were processing each post in the previous example.
+
+Now we process posts in windows of N, meaning that we start processing N posts, and only when all N have been processed do we proceed with processing the following N. Meaning we start with a burst of N posts being processed, and then, as they finish, we 'only' have N-1, N-2, ..., N-(N-1) post processes in-flight, until the one that takes the longest to process finishes, and only then do we start processing another N posts. It would be best if we could start processing another post from the page as soon as one finishes. We can do that as follows:
+```ts
+// benchmark-4.ts
+let page = 1;
+let posts: Array<Post>;
+const semaphore = createSemaphore(N);
+do {
+    posts = await getPosts(page, PAGE_SIZE);
+    await Promise.all(
+        posts.map(async (post) => {
+            await semaphore.acquire();
+            await processPost(post);
+            semaphore.release();
+        })
+    );
+    page++;
+} while (posts.length === PAGE_SIZE);
+
+function createSemaphore(concurrency: number) {
+    const waitQueue: Array<() => void> = [];
+    let count = 0;
+
+    function acquire() {
+        if (count < concurrency) {
+            count++;
+            return Promise.resolve();
         }
-        if (postsPage.length < PAGE_SIZE) {
-            break;
+        return new Promise<void>((resolve) =>
+            waitQueue.push(() => {
+                count++;
+                resolve();
+            })
+        );
+    }
+
+    function release() {
+        count--;
+        if (waitQueue.length > 0) {
+            const resolve = waitQueue.shift();
+            resolve!();
         }
     }
-})();
+
+    return { acquire, release };
+}
 ```
 
-This code is easy to read and does what we want. However, not only does it process each Post at a time, it also only schedules each I/O operation at a time. There is a clear opportunity for parallelisation.
+Now, even though this is already a pretty good solution (error handling aside), we still have more potential for parallelism since N is the concurrency limit for __each__ service. With this solution we can cap, at most, the concurrency limit of B and C if all N `processPost` calls have a `getPostDetails` and a `getComments` request in-flight.
 
-**NOTE**: These are naive implementations. As we know, networks are not our friends and therefore this code can fail spectacularly may any of the involved request failed for any reason.
+We could be saving N posts and fetching another page at the same time, if we extracted each step into more granual and independent components:
+1. Fetch a page of posts from source A and forward each post;
+2. Fetch PostDetails and PostComments from sources B and C, simultaneously, and forward their combined result;
+3. Take the combination of PostDetails and PostComments to save into sink D.
 
-Since the `getPost` and `getComments` are the most obvious thing to parallelise, we can do just that:
-
+This is what we can do in the following example using Vulpix:
 ```ts
-(async function main() {
-    for (let page = 1; ; page++) {
-        const postsPage = await getPosts(page, PAGE_SIZE);
-        for (const { id } of postsPage) {
-            const [post, comments] = await Promise.all([getPost(id), getComments(id)]);
+// benchmark-5.ts
+const NUM_OF_POST_PRODUCERS = 1;
+const NUM_OF_POST_COMMENTS_AGGREGATORS = N;
+const NUM_OF_POST_COMMENTS_SAVERS = N;
 
-            const combined = {
-                ...post,
-                comments,
-            };
+await workflow(setup);
 
-            await savePostWithComments(combined);
-        }
-        if (postsPage.length < PAGE_SIZE) {
-            break;
-        }
+function setup(ctx: Context) {
+    const { $channel: $posts, waitGroup: wgPosts } = channel<Post>(NUM_OF_POST_PRODUCERS);
+    const { $channel: $postsWithComments, waitGroup: wgPostsWithComments } = channel<PostWithComments>(
+        NUM_OF_POST_COMMENTS_AGGREGATORS
+    );
+
+    for (let i = 0; i < NUM_OF_POST_PRODUCERS; i++) {
+        ctx.launch(postProducer, $posts, wgPosts.signal, i + 1, NUM_OF_POST_PRODUCERS);
     }
-})();
-```
 
-For a single Post this is the most we can parallelise in a sequential process because there's a dependency between the steps:
-1. Get the ID from the page response
-2. Get the full Post data + its Comments
-3. Combine the data and save it to our database
-
-Since the Posts are completely independent from each other, we can also process more than one at the same time. We might need to be careful not to process the same Post more than once.
-
-This is where the code stops reading so linearly:
-
-```ts
-(async function main() {
-    for (let page = 1; ; page++) {
-        const postsPage = await getPosts(page, PAGE_SIZE);
-        const workers: Array<Promise<void>> = [];
-        let postsProcessed = 0; // Can use this since runtime is single-thread so no sync needed
-        for (let i = 0; i < NUM_OF_WORKERS; i++) {
-            workers.push(
-                (async function (startingIndex) {
-                    for (
-                        let j = startingIndex;
-                        postsProcessed < postsPage.length && j < postsPage.length;
-                        j = ++postsProcessed
-                    ) {
-                        const { id } = postsPage[j];
-                        const [post, comments] = await Promise.all([getPost(id), getComments(id)]);
-
-                        const combined = {
-                            ...post,
-                            comments,
-                        };
-
-                        await savePostWithComments(combined);
-                    }
-                })(i)
-            );
-        }
-        await Promise.all(workers);
-        if (postsPage.length < PAGE_SIZE) {
-            break;
-        }
+    for (let i = 0; i < NUM_OF_POST_COMMENTS_AGGREGATORS; i++) {
+        ctx.launch(postCommentsAggregator, $posts, $postsWithComments, wgPostsWithComments.signal);
     }
-})();
-```
 
-Here we spawn `NUM_OF_WORKERS` worker processes to process Posts (i.e. schedule I/O operations and process results) at the same time. With this we can go from processing `1` Post at a time to processing `NUM_OF_WORKERS` Posts.
+    for (let i = 0; i < NUM_OF_POST_COMMENTS_SAVERS; i++) {
+        ctx.launch(postWithCommentsSaver, $postsWithComments);
+    }
+}
 
-But now the code is harder to read, debug and test. Moreover, if we need to handle errors or other concerns, this might get unmanageable. It's also not the greatest degree of parallelism we can achieve in terms of I/O operations.
+async function postProducer(
+    ctx: Context,
+    $posts: SendChannel<Post>,
+    doneSignal: WaitGroup.DoneSignal,
+    startingPage = 1,
+    pageIncrement = 1
+) {
+    let page = startingPage;
+    let posts: Array<Post>;
+    do {
+        posts = await getPosts(page, PAGE_SIZE);
+        for (const post of posts) {
+            await $posts.send(post);
+        }
+        page += pageIncrement;
+    } while (posts.length === PAGE_SIZE);
+    doneSignal.done();
+}
 
-If we imagine each step as a stage in a pipeline, we can decouple them to a certain degree. The page iterator doesn't need to know anything about what happens next, only that it needs to emit Post ids. The same with the Posts and Comments aggregator, it simply needs to know that it has to retrieve both pieces of data for the received id, combine them and emit the result. This also allows us to scale each step individually, depending on our needs or downstream services limitations (i.e. rate limiting).
-
-This is how the code might look like with Vulpix:
-
-```ts
-(async function main() {
-    await workflow(async ({ launch }) => {
-        const postIdsChannel = channel<PostID>(4 * NUM_OF_WORKERS);
-        const postsWithCommentsChannel = channel<PostWithComments>(NUM_OF_WORKERS);
-
-        const wg = new WaitingGroup(NUM_OF_WORKERS);
-        wg.then(() => postsWithCommentsChannel.close());
-
-        launch(async function postIdsProducerProcess() {
-            for (let page = 1; ; page++) {
-                const posts = await getPosts(page, PAGE_SIZE);
-                for (const post of posts) {
-                    await postIdsChannel.send(post);
-                }
-                if (posts.length < PAGE_SIZE) {
-                    break;
-                }
-            }
-            postIdsChannel.close();
+async function postCommentsAggregator(
+    ctx: Context,
+    $posts: ReceiveChannel<Post>,
+    $postsWithComments: SendChannel<PostWithComments>,
+    doneSignal: WaitGroup.DoneSignal
+) {
+    for await (const { id } of $posts) {
+        const [postDetails, comments] = await Promise.all([getPostDetails(id), getComments(id)]);
+        await $postsWithComments.send({
+            ...postDetails,
+            comments,
         });
+    }
+    doneSignal.done();
+}
 
-        for (let i = 0; i < NUM_OF_WORKERS; i++) {
-            launch(async function postAndCommentsAggregatorProcess() {
-                for await (const { id } of postIdsChannel) {
-                    const [post, comments] = await Promise.all([getPost(id), getComments(id)]);
-
-                    await postsWithCommentsChannel.send({
-                        ...post,
-                        comments,
-                    });
-                }
-                wg.done();
-            });
-        }
-
-        for (let i = 0; i < NUM_OF_WORKERS; i++) {
-            launch(async function postWithCommentsSinkProcess() {
-                for await (const post of postsWithCommentsChannel) {
-                    await savePostWithComments(post);
-                }
-            });
-        }
-    });
-})();
+async function postWithCommentsSaver(ctx: Context, $postsWithComments: ReceiveChannel<PostWithComments>) {
+    for await (const postWithComments of $postsWithComments) {
+        await savePostWithComments(postWithComments);
+    }
+}
 ```
 
-Throughput-wise, the advantage is that now we can have multiple processes for each step instead of just `NUM_OF_WORKERS` processes in total. If we compare the scenarios, the workers solution can have, at most, `2 * NUM_OF_WORKERS` I/O ops on-the-fly assuming each worker is at the Post & Comments fetching stage. With the presented Vulpix solution we can have `1 + 2 * NUM_OF_WORKERS + NUM_OF_WORKERS` I/O ops on the fly (page fetching + Post & Comments fetching + database saving). And because the whole workflow is more granual and decoupled, we can now define the number of processes for each stage depending on various factors, like how fast are the other processes producing or consuming the messages we receive/send, or if downstream services have some sort of rate limiting. This is an easy way to control the amount of I/O concurrency. We can also define a buffer capacity when creating a channel in case producers produce faster than consumers can handle. This serves as a backpressure mechanism.
+Here we have three routines (`postProducer`, `postCommentsAggregator` and `postWithCommentsSaver`). Routines communicate with each other via channels, making them decoupled. Each receives data inputs from (a) channel(s) and/or sends data through (a) channel(s).
 
-### Results
+In this sense, we can have each routine schedule and wait for async operations to complete (i.e. I/O operations) at the same time. So, in the example above, we can actually have a new page being fetched, N requests for PostDetails and PostComments in-flight, and N save operations in flight as well.
 
-We ran each of the presented cases with the same arguments in order to measure how much time it takes for each script to process every Post object. The test arguments were as follows:
+Here are some benchmarks to see the throughput improvement over each iteration:
 
-* TOTAL_POSTS = 500
-* PAGE_SIZE = 47
-* BASE_LATENCY = 50ms
-* MIN_LATENCY_INCREMENT = 0ms
-* MAX_LATENCY_INCREMENT = 0ms
+| **Benchmark #** | **# N** | **Max Network I/O Ops In-Flight** | **Workflow Duration (ms)** |
+|:---------------:|:------------------------:|:----------------------------------:|:------------------:|
+|        1        |             -            |                  1                 |        77700       |
+|        2        |             -            |                  2                 |        52396       |
+|        3        |             4            |                  8                 |        13943       |
+|        4        |             4            |                  8                 |        13922 *     |
+|        5        |             4            |                 13                 |         6795       |
 
-**NOTE**: `BASE_LATENCY`, `MIN_LATENCY_INCREMENT` and `MAX_LATENCY_INCREMENT` are a way to simulate network latency for each API call. We fixed the combination of these values at 50ms in order to avoid skewed results.
+Simulation environment parameters used:
+* TOTAL_POSTS: 500
+* PAGE_SIZE: 50
+* BASE_LATENCY: 50 (ms)
+* MIN_LATENCY_INCREMENT: 0 (ms)
+* MAX_LATENCY_INCREMENT: 0 (ms)
+* PARALLELISM: 4 (represents N)
+* NUM_OF_POST_PRODUCERS: 1 (only applicable for benchmark 5)
+* NUM_OF_POST_COMMENTS_AGGREGATORS: 4 (only applicable for benchmark 5 - represents N)
+* NUM_OF_POST_COMMENTS_SAVERS: 4 (only applicable for benchmark 5 - represents N)
 
-| **Benchmark #** | **# Configured Workers** | **Max Network I/O Ops On-The-Fly** | **Workflow Duration** |
-|:---------------:|:------------------------:|:----------------------------------:|:---------------------:|
-|        1        |             -            |                  1                 |        839348ms       |
-|        2        |             -            |                  2                 |        544526ms       |
-|        3        |             4            |                  8                 |        153953ms       |
-|        4        |             4            |                 13                 |        67397ms        |
+> (*) Benchmarks 3 and 4 have aproximate results because tests were made in a simulation environment where request latency was fixed at 50ms.
+> 
+> When compared using the same scenario with MAX_LATENCY_INCREMENT=500ms, benchmark-3.ts took also 30% more time to complete than benchmark-4.ts.
 
+In summary, Vulpix provides a way to model the problem as routines communicating with each other, specially if the problem resembles an in-process data pipeline, and in some scenarios it might allow for improved throughput. More than the time it took each process to complete, it is important to compare the max number of in-flight I/O ops each solution provides.
+
+> It should be noted that another benchmark was run, benchmark-6.ts, which provided a slighly lower result: 6569ms. This has the same idea than the example with Vulpix, but using NodeJS streams instead. The example can be seen in the source code. The time difference has to do with the overhead of communicating through channels. All examples are available in the source code. It is notable that benchmark-6.ts is much more complicated than benchmark-5.ts simply because channels provide some properties that are harder to achieve with streams. This makes the slight difference in time be irrelevant. The max I/O is still the same.
+
+## Concepts & API
+
+### Channel
+
+A channel can be seen as a communication link between routines that matches offer and demand. A generic interface for it would be something like:
+```ts
+interface OfferAndDemandMatchingQueue<T> {
+    produce(value: T): Promise<Ok | Error>;
+    consume(): Promise<T | Error>;
+}
+```
+where some routine(s) produce values in the channel, and other(s) take those values from the channel.
+
+When a routine produces a value and there's no routine on the other end to consume it, it can wait until its value is consumed. Likewise, if a routine wants to consume from the channel, it can wait until someone produces a value. 
+
+> :warning: under construction :warning:

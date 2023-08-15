@@ -1,13 +1,13 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+const TOTAL_POSTS = Number(process.env.TOTAL_POSTS);
 
-export type Post = {
+export type Post = Pick<PostDetails, 'id'>;
+
+export type PostDetails = {
     id: number;
     author: string;
     date: Date;
     text: string;
 };
-
-export type PostID = Pick<Post, 'id'>;
 
 export type PostComment = {
     id: number;
@@ -15,41 +15,32 @@ export type PostComment = {
     comment: string;
 };
 
-export type PostWithComments = Post & {
+export type PostWithComments = PostDetails & {
     comments: Array<PostComment>;
 };
 
-export function getPosts(page: number, pageSize: number): Promise<Array<PostID>> {
+export function getPosts(page: number, pageSize: number, signal?: AbortSignal): Promise<Array<Post>> {
     console.log(`Getting page ${page} with size ${pageSize}`);
-    return withLatency(async () => {
-        const TOTAL_POSTS = Number(process.env.TOTAL_POSTS);
-        const results: Array<PostID> = [];
-
-        for (let start = (page - 1) * pageSize, i = start; i < TOTAL_POSTS && i < start + pageSize; i++) {
-            results.push({
-                id: i,
-            });
-        }
-
-        return results;
-    })();
+    return withLatency(() => {
+        return getPageIds(page, pageSize).map((id) => ({ id }));
+    }, signal)();
 }
 
-export function getPost(id: number): Promise<Post> {
+export function getPostDetails(id: number, signal?: AbortSignal): Promise<PostDetails> {
     console.log(`Getting post ${id}`);
-    return withLatency(async () => {
+    return withLatency(() => {
         return {
             id,
             author: 'foo@bar.com',
             date: new Date(),
             text: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi ultrices tempus pulvinar. Aliquam volutpat sagittis tristique. In vitae neque augue. Vestibulum nec velit vulputate, sagittis diam eu, tincidunt odio. Nam vitae malesuada risus, a sagittis nibh. Quisque dignissim maximus erat non egestas. Nam ac aliquet urna. Quisque molestie luctus interdum. Nulla consectetur odio tempor elit semper, vitae finibus dolor tristique.',
         };
-    })();
+    }, signal)();
 }
 
-export function getComments(id: number): Promise<Array<PostComment>> {
+export function getComments(id: number, signal?: AbortSignal): Promise<Array<PostComment>> {
     console.log(`Getting comments for post ${id}`);
-    return withLatency(async () => {
+    return withLatency(() => {
         return [
             {
                 id: 1,
@@ -67,34 +58,50 @@ export function getComments(id: number): Promise<Array<PostComment>> {
                 comment: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
             },
         ];
-    })();
+    }, signal)();
 }
 
-export function savePostWithComments(post: PostWithComments): Promise<void> {
+export function savePostWithComments(post: PostWithComments, signal?: AbortSignal): Promise<void> {
     console.log(`Saving post ${post.id}`);
-    return withLatency(async () => {
-        post; // no_op
-    })();
+    return withLatency(noop, signal)();
 }
 
-// -----------
+function noop() {
+    // no-op
+}
 
-function withLatency<AsyncTask extends (...args: any[]) => Promise<any>>(task: AsyncTask): AsyncTask {
+function getPageIds(page: number, pageSize: number) {
+    const initialId = (page - 1) * pageSize;
+    const idUpperBound = Math.min(TOTAL_POSTS, initialId + pageSize);
+    const ids: Array<number> = [];
+    for (let id = initialId; id < idUpperBound; id++) {
+        ids.push(id);
+    }
+    return ids;
+}
+
+function withLatency<F extends (...args: unknown[]) => unknown>(fn: F, signal?: AbortSignal) {
     const BASE_LATENCY = Number(process.env.BASE_LATENCY);
     const MIN_LATENCY_INCREMENT = Number(process.env.MIN_LATENCY_INCREMENT);
     const MAX_LATENCY_INCREMENT = Number(process.env.MAX_LATENCY_INCREMENT);
 
-    return async function (...args: any[]) {
-        const latency = BASE_LATENCY + randomNumber(MIN_LATENCY_INCREMENT, MAX_LATENCY_INCREMENT);
-        await sleep(latency);
-        return await task(...args);
-    } as AsyncTask;
+    return async function (...args: Parameters<F>) {
+        const latency = BASE_LATENCY + randomInteger(MIN_LATENCY_INCREMENT, MAX_LATENCY_INCREMENT);
+        await sleep(latency, signal);
+        return fn(...args) as ReturnType<F>;
+    };
 }
 
-function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal) {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(resolve, ms);
+        signal?.addEventListener('abort', () => {
+            clearTimeout(timeout);
+            reject(new Error('Canceled'));
+        });
+    });
 }
 
-function randomNumber(min: number, max: number) {
+function randomInteger(min: number, max: number) {
     return Math.floor(Math.random() * (max - min) + min);
 }
